@@ -1,0 +1,161 @@
+#include "WiFi.h"
+#include <HTTPClient.h>
+#include "time.h"
+#include <PL_ADXL355.h>
+#include <math.h>
+
+#define SCK 36
+#define MISO 37
+#define MOSI 35
+#define CS 26
+
+PL::ADXL355 adxl355(26);
+auto range = PL::ADXL355_Range::range2g;
+
+float xOffset = 0.0;
+float yOffset = 0.0;
+float zOffset = 0.0;
+
+const char* ntpServer = "do.pool.ntp.org"; // Servidor NTP de República Dominicana
+const long gmtOffset_sec = -4 * 3600; // GMT-4 (4 horas menos que UTC)
+const int daylightOffset_sec = 0;
+const char* ssid = "USERNAME";
+const char* password = "PASSWORD";
+String GOOGLE_SCRIPT_ID = " GOOGLE SCRIPT ID";
+int count = 0;
+
+void setup() {
+  SPI.begin(SCK, MISO, MOSI, CS);
+  adxl355.begin();
+  adxl355.setRange(range);
+  adxl355.enableMeasurement();
+  
+  // Configurar el huso horario para la República Dominicana
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  
+  Serial.begin(115200);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.print("Connected to WiFi: ");
+  Serial.println(ssid);
+}
+
+void loop() {
+  if (WiFi.status() == WL_CONNECTED) {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+      Serial.println("Failed to obtain time");
+      return;
+    }
+    char timeStringBuff[50];
+    strftime(timeStringBuff, sizeof(timeStringBuff), "%A, %B %d %Y %H:%M:%S", &timeinfo);
+    String asString(timeStringBuff);
+    asString.replace(" ", "-");
+    Serial.print("Time:");
+    Serial.println(asString);
+
+    auto accelerations = adxl355.getAccelerations();
+
+    // Verificar si todas las aceleraciones son iguales a 0.0
+    if (accelerations.x == 0.0 && accelerations.y == 0.0 && accelerations.z == 0.0) {
+      Serial.println("NO ALERTA");
+
+      // Enviar "NO ALERTA" si todas las aceleraciones son 0
+      String alertMessage = "NO ALERTA";
+
+      float calibratedX = accelerations.x - xOffset;
+      float calibratedY = accelerations.y - yOffset;
+      float calibratedZ = accelerations.z - zOffset;
+
+      String urlFinal = "https://script.google.com/macros/s/" + GOOGLE_SCRIPT_ID + "/exec?" +
+                   "date=" + asString + "&sensor=" + String(3) +
+                   "&accelX=" + String(calibratedX) +
+                   "&accelY=" + String(calibratedY) +
+                   "&accelZ=" + String(calibratedZ) +
+                   "&alerta=" + alertMessage;
+
+      Serial.print("POST data to spreadsheet:");
+      Serial.println(urlFinal);
+      HTTPClient http;
+      http.begin(urlFinal.c_str());
+      http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+      int httpCode = http.GET();
+      Serial.print("HTTP Status Code: ");
+      Serial.println(httpCode);
+
+      String payload;
+      if (httpCode > 0) {
+        payload = http.getString();
+        Serial.println("Payload: " + payload);
+      }
+      http.end();
+
+      // No es necesario calibrar el acelerómetro en este caso
+    } else {
+      Serial.println("ALERTA");
+
+      // Enviar "ALERTA" si hay cambios en las aceleraciones
+      String alertMessage = "ALERTA";
+
+      float calibratedX = accelerations.x - xOffset;
+      float calibratedY = accelerations.y - yOffset;
+      float calibratedZ = accelerations.z - zOffset;
+
+      String urlFinal = "https://script.google.com/macros/s/" + GOOGLE_SCRIPT_ID + "/exec?" +
+                   "date=" + asString + "&sensor=" + String(3) +
+                   "&accelX=" + String(calibratedX) +
+                   "&accelY=" + String(calibratedY) +
+                   "&accelZ=" + String(calibratedZ) +
+                   "&alerta=" + alertMessage;
+
+      Serial.print("POST data to spreadsheet:");
+      Serial.println(urlFinal);
+      HTTPClient http;
+      http.begin(urlFinal.c_str());
+      http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+      int httpCode = http.GET();
+      Serial.print("HTTP Status Code: ");
+      Serial.println(httpCode);
+
+      String payload;
+      if (httpCode > 0) {
+        payload = http.getString();
+        Serial.println("Payload: " + payload);
+      }
+      http.end();
+
+      // Calibrar el acelerómetro después de enviar los datos y antes de la próxima iteración
+      calibrateAccelerometer();
+    }
+  }
+  count++;
+  delay(1000);
+}
+
+void calibrateAccelerometer() {
+  const int numSamples = 100;
+  float xSum = 0.0;
+  float ySum = 0.0;
+  float zSum = 0.0;
+
+  for (int i = 0; i < numSamples; i++) {
+    auto accelerations = adxl355.getAccelerations();
+    xSum += accelerations.x;
+    ySum += accelerations.y;
+    zSum += accelerations.z;
+    delay(10);
+  }
+
+  xOffset = xSum / numSamples;
+  yOffset = ySum / numSamples;
+  zOffset = zSum / numSamples;
+
+  Serial.println("Calibration complete:");
+  Serial.println("xOffset: " + String(xOffset));
+  Serial.println("yOffset: " + String(yOffset));
+  Serial.println("zOffset: " + String(zOffset));
+}
